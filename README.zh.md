@@ -28,7 +28,7 @@ description: "委托式 CLI LLM 适配器：每次模型调用都交给 CodeBudd
 
 ## 运行要求
 
-- DeepSeek Harness `^0.2.1-rc.3`（以 `engines.dsh` 声明，宿主版本不符时插件拒绝装载）
+- DeepSeek Harness `>=0.2.1-rc.2 <0.3.0`（以 `engines.dsh` 声明，宿主版本不符时安装器会拒绝，而不是带病装载）
 - Node.js `>=24.9`
 - `PATH` 上有 `codebuddy` 命令并已登录（或用 `command` 指向绝对路径）
 
@@ -119,6 +119,7 @@ dsh plugin --profile work add dsh-codebuddy-llm
 - `permissionMode` 管的是 CLI 的工具；harness 的权限预设、文件系统沙箱和 shell 沙箱都不介入。因此默认的 `bypassPermissions` 等于把桌面进程的 OS 权限交给子进程——不希望如此时请调窄。
 - 只理解 CodeBuddy 形状的输出：`stream-json` 词汇和位置参数式调用都是 CodeBuddy 的约定。
 - 可执行文件缺失或不可执行时，会以拒绝的形式报出所配置的命令，而不是返回空目录；路由仍会挂载，你自己在 `models` 里配置的列表也照常可用。此时模型调用同样会失败，请先修好 `command` 再依赖该路由。
+- 列表命令非零退出、超时，或输出里没有模型行时，同样以拒绝形式报出：探测不会把「读不懂的 CLI」伪装成「空目录」。
 - 压缩与模型切换需要上下文容量：要么 CLI 报出该值，要么目录条目声明 `contextWindow`。
 
 ## 来源

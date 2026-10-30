@@ -1566,7 +1566,16 @@ async function discoverAcpModels(request) {
 async function discoverCliModels(request) {
 	const advertised = request.acp === void 0 ? void 0 : await discoverAcpModels(request);
 	const help = advertised === void 0 || advertised.length === 0 ? await captureListing(request) : void 0;
-	const discovered = advertised !== void 0 && advertised.length > 0 ? [...advertised] : help === void 0 ? [] : parseCodeBuddyModels(help);
+	let discovered;
+	if (advertised !== void 0 && advertised.length > 0) discovered = [...advertised];
+	else if (help === void 0) throw new Error(`the discovery command \`${request.argv.join(" ")}\` reported nothing within ${String(request.timeoutMs)}ms (non-zero exit, timeout, or cancellation)`);
+	else {
+		discovered = parseCodeBuddyModels(help);
+		// Help text without the model listing means this CLI's ids cannot be read,
+		// which is a different fault from a route that serves none: reporting it
+		// keeps a shape change from passing as an empty catalog.
+		if (discovered.length === 0) throw new Error(`\`${request.argv.join(" ")}\` listed no supported models; the CLI's --model help text is not in the expected shape`);
+	}
 	const seen = new Set(discovered.map((model) => model.id));
 	const models = [...discovered];
 	for (const model of request.configured) {

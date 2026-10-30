@@ -28,7 +28,7 @@ This is an unofficial, third-party plugin. Its author is the only party behind i
 
 ## Requirements
 
-- DeepSeek Harness `^0.2.1-rc.3` (declared as `engines.dsh`; the plugin refuses to load on a mismatched host)
+- DeepSeek Harness `>=0.2.1-rc.2 <0.3.0` (declared as `engines.dsh`; the installer refuses a mismatched host instead of loading it)
 - Node.js `>=24.9`
 - The `codebuddy` CLI on `PATH`, signed in (or point `command` at its absolute path)
 
@@ -119,6 +119,7 @@ Model ids come from the CLI itself: an `acp` route asks the handshake (which als
 - `permissionMode` governs the CLI's tools, and harness permission presets, the filesystem sandbox, and the shell sandbox do not mediate them. The default `bypassPermissions` therefore grants the child the desktop process's OS access — narrow it when that is not intended.
 - Only CodeBuddy-shaped output is understood: both the `stream-json` vocabulary and the positional-prompt invocation are CodeBuddy's.
 - A missing or unreachable executable is reported as a refusal naming the configured command, instead of an empty catalog; the route still mounts, and still serves a `models` list you configured yourself. Model calls then fail the same way, so fix the `command` before relying on the route.
+- A listing command that exits non-zero, times out, or prints a help text without the model line is reported the same way: discovery never turns an unreadable CLI into a silently empty catalog.
 - Compaction and a model switch need a context capacity: the CLI must report one, or the catalog entry must declare `contextWindow`.
 
 ## Provenance
