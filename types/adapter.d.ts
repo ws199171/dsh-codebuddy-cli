@@ -3,8 +3,8 @@
  * running one CLI child process and translating its stream-json output into
  * harness `StreamChunk`s. The configured CLI (CodeBuddy by default) carries its
  * own authentication and runs its own agentic loop with its own tools, so the
- * harness forwards conversation text and receives the final answer: no API key,
- * no harness-side tool loop, and no harness tool vocabulary on the wire.
+ * harness forwards conversation text and receives answer, reasoning, and tool
+ * activity: no API key or harness-side tool loop is needed.
  *
  * The adapter is transport-only. Executable facts arrive through a thunk
  * resolved once per operation, and the registering plugin owns validation,
@@ -98,6 +98,9 @@ export interface CliAdapterOptions {
     spawn: (spec: SubprocessSpawnSpec) => SubprocessHandle;
     /** Resolve the workspace selected for a persistent harness session. */
     resolveSessionCwd?: (sessionId: NonNullable<GenerateOptions['sessionId']>) => string | undefined;
+    /** Observe CLI-owned tool activity using the owning harness conversation id. */
+    onToolActivity?: (sessionId: NonNullable<GenerateOptions['sessionId']>, record: { callId: string; toolName: string; status: 'running' | 'ok' | 'failed'; input?: string; output?: string }) => void;
+    onThoughtActivity?: (sessionId: NonNullable<GenerateOptions['sessionId']>, text: string) => void;
 }
 /**
  * Delegating CLI adapter: one provider route whose model ids name the CLI's own
@@ -110,6 +113,8 @@ export declare class CliAdapter extends LlmAdapter {
     private readonly options;
     private readonly spawn;
     private readonly resolveSessionCwd;
+    private readonly onToolActivity;
+    private readonly onThoughtActivity;
     /**
      * The long-lived ACP connection of each workspace, replaced when what starts
      * its child changes. The CLI takes its workspace from the directory the child

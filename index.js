@@ -1,4 +1,5 @@
 import { LlmAdapter } from "@deepseek-ai/dsh-llm";
+import { appendPluginRecord } from "@deepseek-ai/dsh-session";
 import z from "@deepseek-ai/schemastery";
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
@@ -108,8 +109,49 @@ function asRecord$1(value) {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) return void 0;
 	return value;
 }
+/**
+* One delegated tool step the child reported, in the plugin record's shape.
+* Field names follow the child's own vocabulary;
+* `status` collapses ACP's lifecycle to the three states a transcript shows.
+* @param update - one `session/update` payload from the ACP child.
+* @returns the activity record, or undefined for any other update.
+*/
+function toolActivityOf(update) {
+	const kind = update.sessionUpdate;
+	if (kind !== "tool_call" && kind !== "tool_call_update") return void 0;
+	const callId = update.toolCallId;
+	if (typeof callId !== "string" || callId.length === 0) return void 0;
+	const meta = asRecord$1(update._meta);
+	const named = meta?.["codebuddy.ai/toolName"] ?? update.title ?? update.kind;
+	const toolName = typeof named === "string" && named.length > 0 ? named : "tool";
+	const status = update.status === "completed" ? "ok" : update.status === "failed" ? "failed" : "running";
+	const rawInput = update.rawInput ?? update.input;
+	const input = toolDetail(typeof rawInput === "string" ? rawInput : rawInput === void 0 ? void 0 : JSON.stringify(rawInput));
+	const output = toolDetail(Array.isArray(update.content) ? update.content.map((entry) => {
+		const item = asRecord$1(entry);
+		return asRecord$1(item?.content)?.text ?? item?.text;
+	}).filter((text) => typeof text === "string").join("\n") : void 0);
+	return {
+		callId,
+		toolName,
+		status,
+		...input === void 0 ? {} : { input },
+		...output === void 0 ? {} : { output }
+	};
+}
+/** Keep a useful, line-preserving tool detail without growing the Session log without bound. */
+const MAX_TOOL_DETAIL_CHARS = 65_536;
+function toolDetail(value, truncated = false) {
+	if (typeof value !== "string") return void 0;
+	return value.length > MAX_TOOL_DETAIL_CHARS || truncated ? `${value.slice(0, MAX_TOOL_DETAIL_CHARS)}\n[truncated]` : value;
+}
 /** Parent-agent text and thoughts; delegated tool output is not its answer. */
 function updateEventOf(update) {
+	const activity = toolActivityOf(update);
+	if (activity !== void 0) return {
+		kind: "activity",
+		record: activity
+	};
 	const kind = update.sessionUpdate;
 	if (kind !== "agent_message_chunk" && kind !== "agent_thought_chunk") return void 0;
 	const parentToolCallId = asRecord$1(update._meta)?.["codebuddy.ai/parentToolCallId"];
@@ -199,6 +241,8 @@ var AcpTransport = class {
 	disposed = false;
 	pending = /* @__PURE__ */ new Map();
 	turns = /* @__PURE__ */ new Map();
+	/** Tool name per child-side call id; `tool_call_update` carries no name. */
+	toolNames = /* @__PURE__ */ new Map();
 	sessions = /* @__PURE__ */ new Map();
 	constructor(options) {
 		this.options = options;
@@ -324,6 +368,7 @@ var AcpTransport = class {
 			if (expiry !== void 0) clearTimeout(expiry);
 			signal?.removeEventListener("abort", cancel);
 			if (this.turns.get(sessionId) === turn) this.turns.delete(sessionId);
+			for (const key of this.toolNames.keys()) if (key.startsWith(`${sessionId}:`)) this.toolNames.delete(key);
 		}
 	}
 	/**
@@ -416,7 +461,18 @@ var AcpTransport = class {
 			const update = asRecord$1(params.update);
 			if (typeof sessionId !== "string" || update === void 0) return;
 			const event = updateEventOf(update);
-			if (event !== void 0) this.turns.get(sessionId)?.push(event);
+			if (event !== void 0) {
+				// A `tool_call_update` reports progress without repeating the name the
+				// opening `tool_call` carried, so the record keeps the first name it saw.
+				const key = event.record === void 0 ? void 0 : `${sessionId}:${event.record.callId}`;
+				const name = key === void 0 ? void 0 : this.toolNames.get(key);
+				if (event.record !== void 0) {
+					if (name === void 0) this.toolNames.set(key, event.record.toolName);
+					else event.record.toolName = name;
+					if (event.record.status !== "running") this.toolNames.delete(key);
+				}
+				this.turns.get(sessionId)?.push(event);
+			}
 			return;
 		}
 		if (typeof id === "number" && typeof message.method === "string") this.answerRequest(id, message.method, params ?? {});
@@ -531,6 +587,14 @@ function messageText(record) {
 	}
 	return parts.join("");
 }
+function messageThinking(record) {
+	const content = asRecord(record.message)?.content;
+	if (!Array.isArray(content)) return void 0;
+	return content.flatMap((block) => {
+		const item = asRecord(block);
+		return item?.type === "thinking" && typeof item.thinking === "string" ? [item.thinking] : [];
+	}).join("");
+}
 /** Extract a complete {@link TokenUsage} from a result event, when it carries one. */
 function extractUsage(record) {
 	const usage = asRecord(record.usage);
@@ -582,8 +646,8 @@ function streamEventOf(record) {
 function partialTextOf(event) {
 	if (event.type !== "content_block_delta") return void 0;
 	const delta = asRecord(event.delta);
-	if (delta === void 0 || delta.type !== "text_delta") return void 0;
-	const text = delta.text;
+	if (delta === void 0) return void 0;
+	const text = delta.type === "text_delta" ? delta.text : delta.type === "thinking_delta" ? delta.thinking : void 0;
 	return typeof text === "string" && text.length > 0 ? text : void 0;
 }
 /**
@@ -592,22 +656,86 @@ function partialTextOf(event) {
 * @param lastText - the text observed so far for the message in progress; a delta is measured against it.
 * @returns the event this line contributes, or undefined when the line is blank.
 */
-function parseCliLine(line, lastText) {
+function toolResultsOf(record) {
+	const content = asRecord(record.message)?.content;
+	if (!Array.isArray(content)) return void 0;
+	const results = [];
+	for (const block of content) {
+		const item = asRecord(block);
+		if (item?.type !== "tool_result" || typeof item.tool_use_id !== "string") continue;
+		const parts = [];
+		const inner = item.content;
+		if (typeof inner === "string") parts.push(inner);
+		else if (Array.isArray(inner)) for (const entry of inner) {
+			const text = asRecord(entry)?.text;
+			if (typeof text === "string") parts.push(text);
+		}
+		results.push({ callId: item.tool_use_id, text: parts.join("\n"), failed: item.is_error === true });
+	}
+	return results.length > 0 ? results : void 0;
+}
+function toolUsesOf(record) {
+	const content = asRecord(record.message)?.content;
+	if (!Array.isArray(content)) return [];
+	return content.flatMap((block) => {
+		const item = asRecord(block);
+		if (item?.type !== "tool_use" || typeof item.id !== "string" || item.id.length === 0) return [];
+		return [{
+			callId: item.id,
+			toolName: typeof item.name === "string" && item.name.length > 0 ? item.name : "tool",
+			input: typeof item.input === "string" ? item.input : item.input === void 0 ? void 0 : JSON.stringify(item.input)
+		}];
+	});
+}
+function parseCliLine(line, lastText, lastThought = "") {
 	const trimmed = line.trim();
 	if (trimmed.length === 0) return void 0;
 	const record = asRecord(parseJson(trimmed));
 	if (record === void 0) return { kind: "ignored" };
+	if (record.type !== "user" && typeof record.parent_tool_use_id === "string" && record.parent_tool_use_id.length > 0) return { kind: "ignored" };
 	const streamEvent = streamEventOf(record);
 	if (streamEvent !== void 0) {
 		if (streamEvent.type === "message_start") return { kind: "message-start" };
+		if (streamEvent.type === "content_block_start") {
+			const block = asRecord(streamEvent.content_block);
+			if (block?.type !== "tool_use") return { kind: "ignored" };
+			return {
+				kind: "tool-start",
+				index: streamEvent.index,
+				callId: typeof block.id === "string" ? block.id : "",
+				name: typeof block.name === "string" && block.name.length > 0 ? block.name : "tool"
+			};
+		}
+		if (streamEvent.type === "content_block_delta") {
+			const delta = asRecord(streamEvent.delta);
+			if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") return {
+				kind: "tool-input",
+				index: streamEvent.index,
+				partial: delta.partial_json
+			};
+		}
+		if (streamEvent.type === "content_block_stop") return { kind: "tool-input-end", index: streamEvent.index };
 		const text = partialTextOf(streamEvent);
 		return text === void 0 ? { kind: "ignored" } : {
-			kind: "text",
+			kind: asRecord(streamEvent.delta)?.type === "thinking_delta" ? "thought" : "text",
 			delta: { text }
 		};
 	}
+	if (record.type === "user") {
+		const results = toolResultsOf(record);
+		if (results === void 0) return { kind: "ignored" };
+		return results.length === 1 ? { kind: "tool-result", ...results[0] } : { kind: "tool-results", results };
+	}
 	if (record.type === "assistant") {
 		const full = messageText(record);
+		const thinking = messageThinking(record);
+		const tools = toolUsesOf(record);
+		if (tools.length > 0 || thinking !== void 0 && thinking.length > lastThought.length) return {
+			kind: "assistant",
+			tools,
+			...thinking !== void 0 && thinking.length > lastThought.length ? { thought: { text: thinking.slice(lastThought.length) } } : {},
+			...full !== void 0 && full.length > lastText.length ? { delta: { text: full.slice(lastText.length) } } : {}
+		};
 		if (full === void 0 || full.length <= lastText.length) return { kind: "ignored" };
 		return {
 			kind: "text",
@@ -882,6 +1010,8 @@ var CliAdapter = class extends LlmAdapter {
 		this.options = options.options;
 		this.spawn = options.spawn;
 		this.resolveSessionCwd = options.resolveSessionCwd ?? (() => void 0);
+		this.onToolActivity = options.onToolActivity;
+		this.onThoughtActivity = options.onThoughtActivity;
 	}
 	providerInfo(provider) {
 		return {
@@ -966,42 +1096,139 @@ var CliAdapter = class extends LlmAdapter {
 		const queue = new ChunkQueue();
 		let buffer = "";
 		let messageText = "";
+		let messageThought = "";
 		let lastText = "";
-		let blockStarted = false;
+		let blockText = "";
+		let blockKind;
+		let blockIndex = -1;
+		const toolCalls = /* @__PURE__ */ new Map();
+		const toolIndexes = /* @__PURE__ */ new Map();
 		let settled = false;
 		let pendingUsage;
 		let finish;
+		const closeBlock = () => {
+			if (blockKind === void 0) return;
+			if (blockKind === "thought" && options.sessionId !== void 0 && this.onThoughtActivity !== void 0) {
+				if (blockText.trim() !== "") this.onThoughtActivity(options.sessionId, blockText);
+			} else queue.push({
+				type: "block-end",
+				index: blockIndex,
+				block: answerBlock(blockKind, blockText)
+			});
+			blockKind = void 0;
+			blockText = "";
+		};
+		const appendText = (kind, text) => {
+			if (text.length === 0) return;
+			if (blockKind !== kind) {
+				closeBlock();
+				blockKind = kind;
+				blockIndex += 1;
+				if (kind !== "thought" || options.sessionId === void 0 || this.onThoughtActivity === void 0) queue.push({
+					type: "block-start",
+					index: blockIndex,
+					blockType: blockTypeOf(kind)
+				});
+			}
+			blockText += text;
+			if (kind !== "thought" || options.sessionId === void 0 || this.onThoughtActivity === void 0) queue.push({
+				type: kind === "text" ? "text-delta" : "reasoning-delta",
+				index: blockIndex,
+				text
+			});
+		};
+		const reportActivity = (record) => {
+			if (options.sessionId !== void 0) this.onToolActivity?.(options.sessionId, record);
+		};
 		/**
 		* Translate one stdout line into queued chunks and, at most once, a terminal.
 		* @param line - one complete stdout line, newline removed.
 		* @returns whether the line carried the run's terminal event.
 		*/
 		const acceptLine = (line) => {
-			const event = parseCliLine(line, messageText);
+			const event = parseCliLine(line, messageText, messageThought);
 			if (event === void 0 || event.kind === "ignored") return false;
 			if (event.kind === "message-start") {
 				messageText = "";
+				messageThought = "";
 				return false;
 			}
-			if (event.kind === "text") {
-				if (!blockStarted) {
-					blockStarted = true;
-					queue.push({
-						type: "block-start",
-						index: 0,
-						blockType: "text"
-					});
+			if (event.kind === "text" || event.kind === "thought") {
+				if (event.kind === "thought") {
+					messageThought += event.delta.text;
+					appendText("thought", event.delta.text);
+					return false;
 				}
 				messageText += event.delta.text;
 				lastText += event.delta.text;
-				queue.push({
-					type: "text-delta",
-					index: 0,
-					text: event.delta.text
-				});
+				appendText("text", event.delta.text);
+				return false;
+			}
+			if (event.kind === "assistant") {
+				if (event.thought !== void 0) {
+					messageThought += event.thought.text;
+					appendText("thought", event.thought.text);
+				}
+				if (event.delta !== void 0) {
+					messageText += event.delta.text;
+					lastText += event.delta.text;
+					appendText("text", event.delta.text);
+				}
+				for (const tool of event.tools) {
+					closeBlock();
+					let call = toolCalls.get(tool.callId);
+					if (call === void 0) {
+						call = { toolName: tool.toolName, input: "", inputTruncated: false };
+						toolCalls.set(tool.callId, call);
+						reportActivity({ callId: tool.callId, toolName: call.toolName, status: "running" });
+					}
+					if (tool.input !== void 0 && tool.input !== call.input) {
+						call.input = tool.input.slice(0, MAX_TOOL_DETAIL_CHARS);
+						call.inputTruncated = tool.input.length > MAX_TOOL_DETAIL_CHARS;
+						reportActivity({ callId: tool.callId, toolName: call.toolName, status: "running", input: toolDetail(call.input, call.inputTruncated) });
+					}
+				}
+				return false;
+			}
+			if (event.kind === "tool-start") {
+				closeBlock();
+				const callId = event.callId || `tool-${String(toolCalls.size + 1)}`;
+				toolCalls.set(callId, { toolName: event.name, input: "", inputTruncated: false });
+				toolIndexes.set(event.index, callId);
+				reportActivity({ callId, toolName: event.name, status: "running" });
+				return false;
+			}
+			if (event.kind === "tool-input") {
+				const call = toolCalls.get(toolIndexes.get(event.index));
+				if (call !== void 0) {
+					const remaining = MAX_TOOL_DETAIL_CHARS - call.input.length;
+					call.input += event.partial.slice(0, remaining);
+					call.inputTruncated ||= event.partial.length > remaining;
+				}
+				return false;
+			}
+			if (event.kind === "tool-input-end") {
+				const callId = toolIndexes.get(event.index);
+				const call = toolCalls.get(callId);
+				if (call === void 0 || call.input.length === 0) return false;
+				const input = toolDetail(call.input, call.inputTruncated);
+				reportActivity({ callId, toolName: call.toolName, status: "running", ...input === void 0 ? {} : { input } });
+				return false;
+			}
+			if (event.kind === "tool-result" || event.kind === "tool-results") {
+				closeBlock();
+				for (const result of event.kind === "tool-result" ? [event] : event.results) {
+					const call = toolCalls.get(result.callId);
+					if (call === void 0) continue;
+					const input = toolDetail(call.input, call.inputTruncated);
+					const output = toolDetail(result.text);
+					reportActivity({ callId: result.callId, toolName: call.toolName, status: result.failed ? "failed" : "ok", ...input === void 0 ? {} : { input }, ...output === void 0 ? {} : { output } });
+					toolCalls.delete(result.callId);
+				}
 				return false;
 			}
 			const terminal = event.terminal;
+			closeBlock();
 			if (terminal.kind === "stop") {
 				if (terminal.usage !== void 0) pendingUsage = {
 					type: "usage",
@@ -1036,6 +1263,7 @@ var CliAdapter = class extends LlmAdapter {
 				if (buffer.trim().length > 0) acceptLine(buffer);
 				settled = true;
 			}
+			closeBlock();
 			queue.close();
 		};
 		const onError = (error) => {
@@ -1043,12 +1271,14 @@ var CliAdapter = class extends LlmAdapter {
 				settled = true;
 				finish ??= failureChunk(`llm-cli: the CLI output stream failed: ${error.message}`, CLI_START_FAILED_CODE, signal);
 			}
+			closeBlock();
 			queue.close();
 		};
 		const onAbort = () => {
 			if (settled) return;
 			settled = true;
 			finish = failureChunk("llm-cli: the CLI run was aborted", "ABORTED", signal);
+			closeBlock();
 			queue.close();
 		};
 		stdout.on("data", onData);
@@ -1061,14 +1291,6 @@ var CliAdapter = class extends LlmAdapter {
 				if (chunk === void 0) break;
 				yield chunk;
 			}
-			if (lastText.length > 0) yield {
-				type: "block-end",
-				index: 0,
-				block: {
-					type: "text",
-					text: lastText
-				}
-			};
 			if (pendingUsage !== void 0) yield pendingUsage;
 			if (finish !== void 0) {
 				yield finish;
@@ -1120,8 +1342,23 @@ var CliAdapter = class extends LlmAdapter {
 			let step = await events.next();
 			while (!step.done) {
 				const event = step.value;
+				if (event.kind === "activity") {
+					if (kind === "thought" && options.sessionId !== void 0 && this.onThoughtActivity !== void 0) {
+						if (blockText.trim() !== "") this.onThoughtActivity(options.sessionId, blockText);
+						kind = void 0;
+						blockText = "";
+					} else if (kind !== void 0) {
+						yield { type: "block-end", index, block: answerBlock(kind, blockText) };
+						kind = void 0;
+						blockText = "";
+					}
+					if (options.sessionId !== void 0) this.onToolActivity?.(options.sessionId, event.record);
+					step = await events.next();
+					continue;
+				}
 				if (kind !== event.kind) {
-					if (kind !== void 0) yield {
+					if (kind === "thought" && options.sessionId !== void 0 && this.onThoughtActivity !== void 0 && blockText.trim() !== "") this.onThoughtActivity(options.sessionId, blockText);
+					if (kind !== void 0 && (kind !== "thought" || options.sessionId === void 0 || this.onThoughtActivity === void 0)) yield {
 						type: "block-end",
 						index,
 						block: answerBlock(kind, blockText)
@@ -1129,7 +1366,7 @@ var CliAdapter = class extends LlmAdapter {
 					kind = event.kind;
 					blockText = "";
 					index += 1;
-					yield {
+				if (kind !== "thought" || options.sessionId === void 0 || this.onThoughtActivity === void 0) yield {
 						type: "block-start",
 						index,
 						blockType: blockTypeOf(kind)
@@ -1141,14 +1378,15 @@ var CliAdapter = class extends LlmAdapter {
 					index,
 					text: event.text
 				};
-				else yield {
+			else if (options.sessionId === void 0 || this.onThoughtActivity === void 0) yield {
 					type: "reasoning-delta",
 					index,
 					text: event.text
 				};
 				step = await events.next();
 			}
-			if (kind !== void 0) yield {
+			if (kind === "thought" && options.sessionId !== void 0 && this.onThoughtActivity !== void 0 && blockText.trim() !== "") this.onThoughtActivity(options.sessionId, blockText);
+			if (kind !== void 0 && (kind !== "thought" || options.sessionId === void 0 || this.onThoughtActivity === void 0)) yield {
 				type: "block-end",
 				index,
 				block: answerBlock(kind, blockText)
@@ -1316,10 +1554,11 @@ const DEFAULT_MODEL_DISCOVERY_ARGS = ["--help"];
 const DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS = 15e3;
 /**
 * Default ceiling for one delegated `acp` turn. A turn is the CLI's whole agent
-* loop, not one model round, so the bound is generous; it exists to end a run
-* that never converges rather than to pace an ordinary one.
+* loop, not one model round, so the bound only exists to end a run that never
+* converges: a long investigation is the normal case, not an anomaly. Raise or
+* lower it per deployment, or set `0` to remove the timer entirely.
 */
-const DEFAULT_TURN_TIMEOUT_MS = 6e5;
+const DEFAULT_TURN_TIMEOUT_MS = 86400000;
 /**
 * Read the current value behind every reference of a parsed {@link Config}.
 * Every schema field is volatile, so each entry is a reference by construction.
@@ -1439,7 +1678,7 @@ function resolveAdapterOptions(config, defaultCwd) {
 	const discoveryArgs = config.modelDiscoveryArgs ?? DEFAULT_MODEL_DISCOVERY_ARGS;
 	assertNoBlankArg(discoveryArgs, "modelDiscoveryArgs");
 	const discoveryTimeoutMs = timerBound(config.modelDiscoveryTimeoutMs ?? 15e3, "modelDiscoveryTimeoutMs");
-	const turnTimeoutMs = config.turnTimeoutMs ?? 6e5;
+	const turnTimeoutMs = config.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
 	if (!Number.isFinite(turnTimeoutMs) || turnTimeoutMs < 0 || turnTimeoutMs > MAX_TIMER_DELAY_MS) throw new Error(`llm-cli: turnTimeoutMs must be 0 or a positive finite number no greater than ${String(MAX_TIMER_DELAY_MS)}`);
 	const sessionIdArg = config.sessionIdArg ?? "--session-id";
 	const maxTurns = config.maxTurns;
@@ -1598,8 +1837,8 @@ async function discoverCliModels(request) {
 * The route exists so a deployment can run the harness with no API key at all:
 * the configured CLI (CodeBuddy by default) carries its own authentication and
 * runs its own agentic loop with its own tools. The harness forwards
-* conversation text and receives the final answer, so a model swap is a
-* configuration change rather than a harness change.
+* conversation text and receives answer, reasoning, and tool activity, so a
+* model swap is a configuration change rather than a harness change.
 *
 * The plugin depends on exactly two seams — `llm` (the adapter registry) and
 * `subprocess` (child lifecycle) — and reaches the session store, when a
@@ -1700,11 +1939,40 @@ function apply(ctx, config) {
 	const adapter = new CliAdapter({
 		options,
 		spawn: (spec) => ctx.subprocess.spawn(spec),
-		resolveSessionCwd: (sessionId) => ctx.get("sessions")?.get(sessionId)?.header.cwd
+		resolveSessionCwd: (sessionId) => ctx.get("sessions")?.get(sessionId)?.header.cwd,
+		// Display-only: the harness executed none of these steps. The record is
+		// appended to the owning session so the transcript can show what the child
+		// did, and a failure here must not abort the turn the child is streaming.
+		onToolActivity: (sessionId, record) => {
+			try {
+				const session = ctx.get("sessions")?.get(sessionId);
+				if (session === void 0) return;
+				appendPluginRecord(session, "plugin:codebuddy/tool-call", {
+					provider: PROVIDER,
+					...record
+				});
+			} catch (error) {
+				ctx.logger.warn("llm-cli: could not record delegated tool activity: %s", error instanceof Error ? error.message : String(error));
+			}
+		},
+		onThoughtActivity: (sessionId, text) => {
+			try {
+				const session = ctx.get("sessions")?.get(sessionId);
+				if (session === void 0) return;
+				appendPluginRecord(session, "plugin:codebuddy/thought", { provider: PROVIDER, text });
+			} catch (error) {
+				ctx.logger.warn("llm-cli: could not record delegated thought: %s", error instanceof Error ? error.message : String(error));
+			}
+		}
 	});
+	// The route still registers when the CLI is unreachable, but its name states the
+	// installation step: an installed-looking provider with no models reads as a
+	// broken plugin, and the row is the one surface every client shows.
+	const initial = resolveAdapterOptions(plainOptions(config), process.cwd());
+	const routeName = executableProblem(initial.argv[0], initial.env) === void 0 ? DISPLAY_NAME : `${DISPLAY_NAME}（未安装 CLI / CLI not installed）`;
 	ctx.llm.registerConfigurableProviders([{
 		provider: PROVIDER,
-		displayName: DISPLAY_NAME,
+		displayName: routeName,
 		settingsNs,
 		settingsPath: []
 	}]);

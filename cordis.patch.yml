@@ -1,15 +1,14 @@
-# The dsh-codebuddy-cli bundle: mounts the delegating CLI adapter as one extra
-# model route. Nothing else in the composition changes — this patch adds a
-# route, it does not replace the HTTP provider rows. To make the CLI the only
-# conversation source, disable them in your own profile patch:
+# The dsh-codebuddy-cli bundle: makes the CodeBuddy CLI the route a new Agent
+# answers on, so the profile needs no API key and no model picked by hand.
+# Installing the package is the whole setup — the rows below are the defaults,
+# and a profile's own patch still overrides them by id, last write winning.
+#
+# The HTTP provider rows stay mounted on purpose, so DeepSeek keeps working and
+# stays selectable beside the CLI. Disable them in your own profile patch when
+# the CLI should be the only conversation source:
 #
 #   - id: llm-deepseek
 #     disabled: true
-#
-# and point the default model at `codebuddy-cli` on `agent-default-model`.
-#
-# Later bundle patches and your own profile cordis.patch.yml still address this
-# row by id, with the last write winning.
 
 - insert:
     # The row id is also the settings namespace: an `llm-cli:` settings section
@@ -26,13 +25,22 @@
           - '--output-format'
           - 'stream-json'
           - '--include-partial-messages'
-        # `print` starts one child per call and needs nothing but the CLI's own
-        # non-interactive mode. Switch to `acp` (with `acpArgs: ['--acp']`) to
-        # keep one long-lived child per route instead: the cold start is paid
-        # once, the CLI's thinking arrives as its own block, and a conversation
-        # resumes its CLI-side session.
+        # Both transports expose answer text and report CLI-owned thinking
+        # and tool activity. `print` starts a child per call;
+        # `acp` keeps a child per route and resumes CLI-side sessions.
         transport: print
         # WARNING: this grants the CLI's own tools the desktop process's OS
         # access without asking. Narrow it to `default`/`acceptEdits` when the
         # conversation should not be able to act on its own.
         permissionMode: bypassPermissions
+
+# A new Agent lands on the CLI route, so installing this bundle is the whole
+# setup. Without this row the base default (`deepseek-official`) would keep
+# answering until someone picked a model by hand, which is the opposite of a
+# bundle that exists to need no configuration. `DSH_CLI_MODEL` names an id the
+# CLI accepts; unset leaves the CLI's own default selection in charge, which is
+# what the CLI's own `--model default` expresses.
+- id: agent-default-model
+  config:
+    provider: codebuddy-cli
+    model: !!js process.env.DSH_CLI_MODEL ?? 'default'

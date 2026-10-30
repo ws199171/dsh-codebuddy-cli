@@ -13,8 +13,9 @@
  * measurement. A frame adding nothing beyond the text already seen is ignored,
  * so a run reading both families emits each character once.
  *
- * Unknown events are ignored: the event vocabulary is merge-extensible and this
- * adapter only consumes what it maps.
+ * Partial thinking and tool-use frames are reported separately from answer
+ * text. Unknown events are ignored: the event vocabulary is merge-extensible
+ * and this adapter only consumes what it maps.
  *
  * @module dsh-codebuddy-llm/wire
  */
@@ -42,6 +43,34 @@ export type CliLineEvent = {
     kind: 'text';
     delta: CliTextDelta;
 } | {
+    kind: 'thought';
+    delta: CliTextDelta;
+} | {
+    kind: 'assistant';
+    delta?: CliTextDelta;
+    thought?: CliTextDelta;
+    tools: { callId: string; toolName: string; input?: string }[];
+} | {
+    kind: 'tool-start';
+    index: number;
+    callId: string;
+    name: string;
+} | {
+    kind: 'tool-input';
+    index: number;
+    partial: string;
+} | {
+    kind: 'tool-input-end';
+    index: number;
+} | {
+    kind: 'tool-result';
+    callId: string;
+    text: string;
+    failed: boolean;
+} | {
+    kind: 'tool-results';
+    results: { callId: string; text: string; failed: boolean }[];
+} | {
     kind: 'terminal';
     terminal: CliTerminal;
 } | {
@@ -53,5 +82,5 @@ export type CliLineEvent = {
  * @param lastText - the text observed so far for the message in progress; a delta is measured against it.
  * @returns the event this line contributes, or undefined when the line is blank.
  */
-export declare function parseCliLine(line: string, lastText: string): CliLineEvent | undefined;
+export declare function parseCliLine(line: string, lastText: string, lastThought?: string): CliLineEvent | undefined;
 //# sourceMappingURL=wire.d.ts.map

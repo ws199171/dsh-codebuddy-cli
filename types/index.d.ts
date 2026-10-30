@@ -5,8 +5,8 @@
  * The route exists so a deployment can run the harness with no API key at all:
  * the configured CLI (CodeBuddy by default) carries its own authentication and
  * runs its own agentic loop with its own tools. The harness forwards
- * conversation text and receives the final answer, so a model swap is a
- * configuration change rather than a harness change.
+ * conversation text and receives answer, reasoning, and tool activity, so a
+ * model swap is a configuration change rather than a harness change.
  *
  * The plugin depends on exactly two seams — `llm` (the adapter registry) and
  * `subprocess` (child lifecycle) — and reaches the session store, when a

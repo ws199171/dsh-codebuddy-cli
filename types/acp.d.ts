@@ -24,6 +24,15 @@ export type AcpTurnEvent = {
 } | {
     kind: 'thought';
     text: string;
+} | {
+    kind: 'activity';
+    record: {
+        callId: string;
+        toolName: string;
+        status: 'running' | 'ok' | 'failed';
+        input?: string;
+        output?: string;
+    };
 };
 /**
  * How one delegated turn ended, as the CLI itself reported it. A turn the CLI
@@ -111,6 +120,7 @@ export declare class AcpTransport {
     private disposed;
     private readonly pending;
     private readonly turns;
+    private readonly toolNames;
     private readonly sessions;
     constructor(options: AcpTransportOptions);
     /**
