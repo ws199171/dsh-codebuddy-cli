@@ -1,0 +1,130 @@
+---
+description: "Delegating CLI LLM adapter that answers each model call by running the CodeBuddy CLI, which carries its own sign-in and agent loop."
+---
+
+# `dsh-codebuddy-llm`
+
+English | [中文](README.zh.md)
+
+> **Unofficial plugin.** Not affiliated with, sponsored, or endorsed by CodeBuddy or DeepSeek. It drives a CLI you installed and signed in yourself, so its use, the quota it consumes, and compliance with that CLI's terms are your responsibility. Read the [disclaimer](#disclaimer) before deploying it.
+
+## Summary
+
+One [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin in **one file** (`index.js`, a self-contained ESM bundle). It registers one LLM route, `codebuddy-cli`, whose answers come from a CodeBuddy CLI child process instead of a provider endpoint: the CLI carries its own authentication and runs its own agent loop with its own tools, so the harness forwards conversation text and streams back the final answer. No API key, no endpoint, and no harness tool vocabulary on the wire.
+
+This package is a standalone extraction of `@deepseek-ai/dsh-llm-cli` from the harness repository. It modifies nothing about CodeBuddy: it only invokes the CLI you already have installed and signed in.
+
+## Disclaimer
+
+This is an unofficial, third-party plugin. Its author is the only party behind it.
+
+- **Use at your own risk.** The software is provided "AS IS", without warranty of any kind, as stated in [LICENSE](LICENSE). The author is not liable for lost or leaked data, unexpected cost, quota exhaustion, account restriction or suspension, policy violation, or any other damage arising from its use.
+- **You own the terms you accepted.** This plugin calls a CLI you installed and signed in to. Whether automated or non-interactive invocation is permitted, what a personal seat may be used for versus a commercial or enterprise one, and whether a team or product deployment is allowed are all decided by the CodeBuddy licence and your account agreement — not by this plugin. Read them before rolling it out beyond your own machine.
+- **Nothing here modifies CodeBuddy.** The plugin only spawns the executable and reads its stdout; it does not patch, decompile, instrument, proxy, or redistribute it. Its reliance on CLI flags and on two private `_meta` keys is best-effort and can break at any CLI release.
+- **Your conversation leaves the harness.** Text you send becomes the CLI's prompt and reaches whatever provider that CLI is configured with. Harness-side routing, sandboxing, and privacy expectations do not extend to that path.
+- **Your account pays.** Every model call spends the quota of the CLI account signed in on this machine. Harness features that call the model on their own — session titles, compaction, subagents — multiply the number of calls.
+- **The default grants OS access.** `permissionMode: bypassPermissions` lets the CLI's own tools act with the permissions of the process that started it, without asking. Narrow it before pointing this plugin at code you do not trust.
+- **No support commitment.** There is no guarantee of an answer, of a fix, or of compatibility with any future harness or CLI version.
+
+## Requirements
+
+- DeepSeek Harness `^0.2.1-rc.3` (declared as `engines.dsh`; the plugin refuses to load on a mismatched host)
+- Node.js `>=24.9`
+- The `codebuddy` CLI on `PATH`, signed in (or point `command` at its absolute path)
+
+## Tips
+
+- **Prove the CLI first, without the harness.** `codebuddy --print --output-format stream-json "hello"` should print one JSON line per event. A plugin that registers but answers nothing usually means the CLI is not signed in, not on the `PATH` of the process that launched the harness, or does not support the flags in `args`.
+- **Prefer an absolute `command`** when the harness runs from a GUI, a daemon, or a service manager: those often inherit a smaller `PATH` than your shell.
+- **Narrow the default permission mode** for repositories you did not write. `default`, `acceptEdits`, or `plan` keeps the CLI's tools from acting on their own; `bypassPermissions` does not.
+- **Try `transport: acp`** when the CLI supports `--acp`: one child per route instead of one per call, the CLI's thinking arrives as its own block, and a conversation resumes its CLI-side session. Fall back to `print` for a CLI without ACP.
+- **Keep the entry id `llm-cli`.** That id is the settings namespace, so the documented `llm-cli:` section and any existing profile settings keep working after install.
+- **Approximate a bare model call** with `tools: ''` (no built-in tools) and a `maxTurns` of `1`; leave both out to give the CLI its own loop.
+- **Watch the quota, not just the bill.** A single harness turn can issue several model calls on its own (session title, compaction, subagent work), each one spending your CLI account's quota.
+
+## Install
+
+As an installable bundle (recommended):
+
+```sh
+dsh plugin --profile work add dsh-codebuddy-llm
+```
+
+The package declares `dsh.bundle.patch`, so its patch layer inserts the `llm-cli` row. To make the CLI the only model source, disable the HTTP provider rows in your own profile `cordis.patch.yml`:
+
+```yaml
+- id: llm-deepseek
+  disabled: true
+
+- id: agent-default-model
+  config:
+    provider: codebuddy-cli
+    model: default
+```
+
+Or mount it by hand, without the bundle layer:
+
+```yaml
+- id: llm-cli
+  name: 'dsh-codebuddy-llm'
+  config:
+    command: codebuddy
+    args: ['--print', '--output-format', 'stream-json', '--include-partial-messages']
+    transport: print
+```
+
+A missing `config` section still registers a serving route with the defaults below.
+
+## Configuration
+
+Every field is optional and volatile: a settings edit reaches the next request without re-registering the route.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `command` | `codebuddy` | Executable to spawn; `PATH` lookup applies. |
+| `args` | `['--print', '--output-format', 'stream-json', '--include-partial-messages']` | Arguments of the `print` transport. An empty entry is refused, because the prompt is appended as the trailing positional argument. |
+| `acpArgs` | `['--acp']` | Arguments that start the CLI as a long-lived ACP agent. |
+| `transport` | `print` | `print` starts one child per call and reads its `stream-json`; `acp` keeps one child per route and prompts a session on it. |
+| `permissionMode` | `bypassPermissions` | The CLI's own tool-approval policy. See the warning below. |
+| `models` | `[]` | Advisory catalog for deployments that cannot interrogate the CLI. Each entry is `{ id, name?, contextWindow? }`. |
+| `cwd` | process directory | Pins the child's workspace. A persistent session uses its recorded workspace instead. |
+| `env` | `{}` | Extra environment entries, layered over the subprocess seam's scrubbed base. |
+| `sessionIdArg` | `--session-id` | Argument carrying the persistent session id; an empty string makes every call stateless. |
+| `tools` | CLI default | Tool set the CLI restricts itself to; an empty string disables every built-in tool. |
+| `maxTurns` | CLI default | Cap on the CLI's own agentic turns inside one call. |
+| `effort` | CLI default | Reasoning level forwarded to the CLI. |
+| `turnTimeoutMs` | `600000` | Ceiling for one delegated turn; `0` disables it. |
+| `disposeGraceMs` | `3000` | Grace period for child process-tree termination. |
+| `modelDiscoveryArgs` | `['--help']` | Command whose output lists the CLI's model ids for a `print` route. |
+| `modelDiscoveryTimeoutMs` | `15000` | Deadline for that listing command. |
+
+Model ids come from the CLI itself: an `acp` route asks the handshake (which also reports each model's input capacity), a `print` route parses the listing command. A configured catalog is merged behind the discovered entries.
+
+> **Warning — permissions.** `permissionMode` governs the CLI's own tools, and the harness permission presets, the filesystem sandbox, and the shell sandbox do not mediate them. The default `bypassPermissions` therefore grants the child the OS access of the process that launched the harness. Set it explicitly to `default`, `acceptEdits`, or `plan` whenever the conversation may touch code or machines you do not trust.
+
+> **Warning — data and cost.** Everything you send is forwarded to the CLI and on to its provider, and every call spends that account's quota. Both happen outside the harness's own accounting and privacy boundary.
+
+## Compliance and data flow
+
+- **Nothing about CodeBuddy is modified, patched, decompiled, or redistributed.** The plugin only spawns the executable with its documented flags and reads its stdout.
+- **No credential handling.** The child keeps its own sign-in state; this package reads no key, token, or config file of the CLI.
+- **Data leaves the harness through your own CLI session.** Conversation text you send becomes the child's prompt and reaches whatever provider that CLI is configured with. The harness session log records the answer, not what the CLI did inside its own loop.
+- **Each model call consumes your CLI account's own quota.** Harness features that call the model on their own (session titles, compaction, subagents) multiply invocations.
+- **Not affiliated with or endorsed by CodeBuddy.** The name is used only to describe the CLI this adapter drives.
+- Two CodeBuddy-private `_meta` keys (`codebuddy.ai/parentToolCallId`, `codebuddy.ai/errorMessage`) are read best-effort; when absent the ACP transport degrades instead of failing.
+
+## Known limitations
+
+- Only the final answer crosses the boundary: the CLI's internal tool steps stay invisible to the harness session log.
+- `permissionMode` governs the CLI's tools, and harness permission presets, the filesystem sandbox, and the shell sandbox do not mediate them. The default `bypassPermissions` therefore grants the child the desktop process's OS access — narrow it when that is not intended.
+- Only CodeBuddy-shaped output is understood: both the `stream-json` vocabulary and the positional-prompt invocation are CodeBuddy's.
+- A missing executable yields no discovered models; the route still mounts and serves its configured catalog.
+- Compaction and a model switch need a context capacity: the CLI must report one, or the catalog entry must declare `contextWindow`.
+
+## Provenance
+
+Generated from `packages/llm/llm-cli` of the DeepSeek Harness repository at version `0.2.1-rc.3`. `index.js` is the harness build output with the `@deepseek-ai/dsh-timeout` constant inlined; it keeps two runtime imports: `@deepseek-ai/dsh-llm` (supplied by the running harness, as a peer) and `@deepseek-ai/schemastery`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

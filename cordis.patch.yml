@@ -1,0 +1,38 @@
+# The dsh-codebuddy-cli bundle: mounts the delegating CLI adapter as one extra
+# model route. Nothing else in the composition changes — this patch adds a
+# route, it does not replace the HTTP provider rows. To make the CLI the only
+# conversation source, disable them in your own profile patch:
+#
+#   - id: llm-deepseek
+#     disabled: true
+#
+# and point the default model at `codebuddy-cli` on `agent-default-model`.
+#
+# Later bundle patches and your own profile cordis.patch.yml still address this
+# row by id, with the last write winning.
+
+- insert:
+    # The row id is also the settings namespace: an `llm-cli:` settings section
+    # refreshes command/args/models on the very next request, without restarting.
+    - id: llm-cli
+      name: 'dsh-codebuddy-llm'
+      config:
+        command: codebuddy
+        # `--include-partial-messages` is what makes the answer arrive as it is
+        # written; without it a turn with several tool rounds stays silent until
+        # the last one ends.
+        args:
+          - '--print'
+          - '--output-format'
+          - 'stream-json'
+          - '--include-partial-messages'
+        # `print` starts one child per call and needs nothing but the CLI's own
+        # non-interactive mode. Switch to `acp` (with `acpArgs: ['--acp']`) to
+        # keep one long-lived child per route instead: the cold start is paid
+        # once, the CLI's thinking arrives as its own block, and a conversation
+        # resumes its CLI-side session.
+        transport: print
+        # WARNING: this grants the CLI's own tools the desktop process's OS
+        # access without asking. Narrow it to `default`/`acceptEdits` when the
+        # conversation should not be able to act on its own.
+        permissionMode: bypassPermissions

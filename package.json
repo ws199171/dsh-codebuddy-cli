@@ -1,0 +1,69 @@
+{
+  "name": "dsh-codebuddy-llm",
+  "version": "0.1.0",
+  "description": "Delegating CLI LLM adapter for the DeepSeek Harness: answers each model call by running the CodeBuddy CLI child that carries its own sign-in and agent loop, so a deployment runs without an API key",
+  "author": "saisaiwang <287442583@qq.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ws199171/dsh-codebuddy-cli.git"
+  },
+  "homepage": "https://github.com/ws199171/dsh-codebuddy-cli#readme",
+  "bugs": {
+    "url": "https://github.com/ws199171/dsh-codebuddy-cli/issues"
+  },
+  "type": "module",
+  "main": "index.js",
+  "types": "types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "types/**/*.d.ts",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "cordis-plugin",
+    "codebuddy",
+    "llm",
+    "cli",
+    "adapter"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "dsh": "^0.2.1-rc.3",
+    "node": ">=24.9"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.3"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.5"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
