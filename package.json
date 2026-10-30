@@ -1,6 +1,6 @@
 {
   "name": "dsh-codebuddy-llm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Delegating CLI LLM adapter for the DeepSeek Harness: answers each model call by running the CodeBuddy CLI child that carries its own sign-in and agent loop, so a deployment runs without an API key",
   "author": "saisaiwang <287442583@qq.com>",
   "repository": {

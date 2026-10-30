@@ -35,7 +35,7 @@ description: "委托式 CLI LLM 适配器：每次模型调用都交给 CodeBudd
 ## 使用提示
 
 - **先用 CLI 自证，再装插件。** 直接跑 `codebuddy --print --output-format stream-json "hello"`，应能看到一行一个事件的 JSON。若插件挂上了却答不出内容，通常意味着 CLI 未登录、不在启动 harness 那个进程的 `PATH` 上，或不支持 `args` 里的参数。
-- **`command` 尽量写绝对路径。** 从 GUI、守护进程或服务管理器启动 harness 时，继承到的 `PATH` 往往比你的 shell 小。
+- **`command` 尽量写绝对路径。** 从 GUI、守护进程或服务管理器启动 harness 时，继承到的 `PATH` 往往比你的 shell 小。CLI 缺失不会被静默吞掉：Models 页会以 `CodeBuddy CLI is unavailable: codebuddy is not on this process's PATH (N directories searched)` 拒绝，装载时也会打印同样的内容。
 - **对不是自己写的仓库，先调窄权限。** `default`、`acceptEdits` 或 `plan` 会阻止 CLI 的工具自行行动；`bypassPermissions` 不会。
 - **CLI 支持 `--acp` 时优先试 `transport: acp`。** 每条路由只起一个子进程而非每次调用一个，CLI 的思考过程会作为独立块返回，对话也能续用 CLI 侧会话；不支持 ACP 的 CLI 仍用 `print`。
 - **保留 entry id `llm-cli`。** 这个 id 就是设置命名空间，改掉它会让文档里的 `llm-cli:` 配置段和已有 profile 设置失效。
@@ -118,7 +118,7 @@ dsh plugin --profile work add dsh-codebuddy-llm
 - 只有最终答案越过边界：CLI 内部的工具步骤对 harness 会话日志不可见。
 - `permissionMode` 管的是 CLI 的工具；harness 的权限预设、文件系统沙箱和 shell 沙箱都不介入。因此默认的 `bypassPermissions` 等于把桌面进程的 OS 权限交给子进程——不希望如此时请调窄。
 - 只理解 CodeBuddy 形状的输出：`stream-json` 词汇和位置参数式调用都是 CodeBuddy 的约定。
-- 可执行文件缺失时发现不到模型；路由仍会挂载并提供已配置的目录。
+- 可执行文件缺失或不可执行时，会以拒绝的形式报出所配置的命令，而不是返回空目录；路由仍会挂载，你自己在 `models` 里配置的列表也照常可用。此时模型调用同样会失败，请先修好 `command` 再依赖该路由。
 - 压缩与模型切换需要上下文容量：要么 CLI 报出该值，要么目录条目声明 `contextWindow`。
 
 ## 来源

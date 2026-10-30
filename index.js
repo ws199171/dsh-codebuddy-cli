@@ -1,7 +1,37 @@
 import { LlmAdapter } from "@deepseek-ai/dsh-llm";
 import z from "@deepseek-ai/schemastery";
+import { accessSync, constants } from "node:fs";
+import { delimiter, join } from "node:path";
 /** Largest delay a Node timer accepts; inlined so this file needs no dsh-timeout package. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+/**
+* Report why the configured executable cannot be run, or undefined when it can.
+*
+* A host launched from a desktop shell inherits launchd's PATH rather than the
+* one a login shell assembles, so an installed CLI is routinely unreachable
+* under the bare name `codebuddy`. Discovery would otherwise report an empty
+* catalog, which reads as "this route serves no models" instead of "the CLI is
+* not installed or not on this process's PATH".
+* @param command - configured executable, either a bare name or a path.
+* @param env - extra environment entries the child receives over the seam's base.
+* @returns an actionable diagnostic, or undefined when the executable resolves.
+*/
+function executableProblem(command, env) {
+	const runs = (candidate) => {
+		try {
+			accessSync(candidate, constants.X_OK);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	if (command.length === 0) return "the configured command is empty";
+	if (command.includes("/")) return runs(command) ? undefined : `${command} is missing or not executable`;
+	const path = env.PATH ?? process.env.PATH ?? "";
+	const searched = path.split(delimiter).filter((dir) => dir.length > 0);
+	for (const dir of searched) if (runs(join(dir, command))) return undefined;
+	return `${command} is not on this process's PATH (${searched.length === 0 ? "PATH is empty" : `${searched.length} directories searched`})`;
+}
 //#region lib/types/acp.js
 /**
 * ACP transport: one long-lived CLI child that carries every delegated run of a
@@ -1624,6 +1654,11 @@ function apply(ctx, config) {
 	const probeCatalog = async (signal) => {
 		const current = plainOptions(config);
 		const facts = resolveAdapterOptions(current, process.cwd());
+		// A missing CLI is a deployment fault, not an empty catalog: throwing here
+		// reaches the Models page as a refusal carrying this text, while the load
+		// probe logs it, so neither surface shows a silent zero-model route.
+		const problem = executableProblem(facts.argv[0], facts.env);
+		if (problem !== void 0) throw new Error(`CodeBuddy CLI is unavailable: ${problem}. Install the CodeBuddy CLI, or point \`command\` in this plugin's \`llm-cli\` config at its absolute path.`);
 		const models = await discoverCliModels({
 			argv: facts.discoveryArgv,
 			cwd: facts.cwd,

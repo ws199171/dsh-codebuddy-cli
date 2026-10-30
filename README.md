@@ -35,7 +35,7 @@ This is an unofficial, third-party plugin. Its author is the only party behind i
 ## Tips
 
 - **Prove the CLI first, without the harness.** `codebuddy --print --output-format stream-json "hello"` should print one JSON line per event. A plugin that registers but answers nothing usually means the CLI is not signed in, not on the `PATH` of the process that launched the harness, or does not support the flags in `args`.
-- **Prefer an absolute `command`** when the harness runs from a GUI, a daemon, or a service manager: those often inherit a smaller `PATH` than your shell.
+- **Prefer an absolute `command`** when the harness runs from a GUI, a daemon, or a service manager: those often inherit a smaller `PATH` than your shell. A missing CLI is reported rather than hidden — the Models page refuses with `CodeBuddy CLI is unavailable: codebuddy is not on this process's PATH (N directories searched)`, and the same text is logged at load.
 - **Narrow the default permission mode** for repositories you did not write. `default`, `acceptEdits`, or `plan` keeps the CLI's tools from acting on their own; `bypassPermissions` does not.
 - **Try `transport: acp`** when the CLI supports `--acp`: one child per route instead of one per call, the CLI's thinking arrives as its own block, and a conversation resumes its CLI-side session. Fall back to `print` for a CLI without ACP.
 - **Keep the entry id `llm-cli`.** That id is the settings namespace, so the documented `llm-cli:` section and any existing profile settings keep working after install.
@@ -118,7 +118,7 @@ Model ids come from the CLI itself: an `acp` route asks the handshake (which als
 - Only the final answer crosses the boundary: the CLI's internal tool steps stay invisible to the harness session log.
 - `permissionMode` governs the CLI's tools, and harness permission presets, the filesystem sandbox, and the shell sandbox do not mediate them. The default `bypassPermissions` therefore grants the child the desktop process's OS access — narrow it when that is not intended.
 - Only CodeBuddy-shaped output is understood: both the `stream-json` vocabulary and the positional-prompt invocation are CodeBuddy's.
-- A missing executable yields no discovered models; the route still mounts and serves its configured catalog.
+- A missing or unreachable executable is reported as a refusal naming the configured command, instead of an empty catalog; the route still mounts, and still serves a `models` list you configured yourself. Model calls then fail the same way, so fix the `command` before relying on the route.
 - Compaction and a model switch need a context capacity: the CLI must report one, or the catalog entry must declare `contextWindow`.
 
 ## Provenance
