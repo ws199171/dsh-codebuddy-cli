@@ -34,11 +34,12 @@ export declare const DEFAULT_MODEL_DISCOVERY_ARGS: readonly string[];
 /** Default ceiling for one model-discovery child. */
 export declare const DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS = 15000;
 /**
- * Default ceiling for one delegated `acp` turn. A turn is the CLI's whole agent
+ * Default ceiling for one delegated CLI turn. A turn is the CLI's whole agent
  * loop, not one model round, so the bound is generous; it exists to end a run
  * that never converges rather than to pace an ordinary one.
  */
-export declare const DEFAULT_TURN_TIMEOUT_MS = 600000;
+export declare const DEFAULT_TURN_TIMEOUT_MS = 86400000;
+export declare const DEFAULT_MAX_TURNS = 999;
 /**
  * Plugin config, validated by the same-named schemastery schema and doubling as
  * the `llm-cli` user-settings section shape. Every field is optional in yml: a
@@ -57,7 +58,7 @@ export interface Config {
     /** Hard ceiling in milliseconds for one model-discovery child. */
     modelDiscoveryTimeoutMs: Volatile<number>;
     /**
-     * Ceiling in milliseconds for one delegated `acp` turn, or `0` for none. The
+     * Ceiling in milliseconds for one delegated CLI turn, or `0` for none. The
      * CLI runs its whole agent loop inside one call, so an unbounded turn is a
      * run that can hold the conversation open for as long as it keeps working.
      */

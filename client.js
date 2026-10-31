@@ -2,15 +2,19 @@ window.__ModuleLoader__.load({
   id: 'dsh-codebuddy-llm',
   factory: (require) => {
     const React = require('react');
-    const { IconChevronDownOutlineRegular, IconThinkOutlineRegular } = require('@deepseek-ai/dsh-client-ui-primitives');
+    const { IconChevronDownOutlineRegular, IconRefreshOutlineRegular, IconSearchOutlineRegular, IconThinkOutlineRegular } = require('@deepseek-ai/dsh-client-ui-primitives');
     const TOOL_EVENT = 'plugin:codebuddy/tool-call';
     const THOUGHT_EVENT = 'plugin:codebuddy/thought';
     const NS = 'codebuddy-tool';
     const en = {
       thought: 'Thought',
+      models: 'Available models', refresh: 'Refresh models', search: 'Search models',
+      loading: 'Checking models...', noModels: 'No models found',
     };
     const zh = {
       thought: '思考',
+      models: '可用模型', refresh: '刷新模型', search: '搜索模型',
+      loading: '正在查询模型...', noModels: '没有找到模型',
     };
     const TOOL_NAMES = {
       Bash: 'bash', Read: 'read', Write: 'write', Edit: 'edit',
@@ -100,6 +104,49 @@ window.__ModuleLoader__.load({
           e('span', { className: 'cb-thought-preview' }, firstLine(node.data.text)),
           e(IconChevronDownOutlineRegular, { size: 14, className: 'cb-tool-chevron', 'aria-hidden': true })),
         e('pre', { className: 'cb-thought-body' }, node.data.text));
+    }
+
+    function ModelCatalog({ provider, remote, t }) {
+      const [models, setModels] = React.useState([]);
+      const [query, setQuery] = React.useState('');
+      const [loading, setLoading] = React.useState(true);
+      const [error, setError] = React.useState('');
+      const refresh = React.useCallback(async (active = () => true) => {
+        setLoading(true);
+        setError('');
+        try {
+          const response = await remote.llm.discoverModels(provider.settingsNs, { provider: provider.provider });
+          if (!active()) return;
+          if (!response.ok) throw new Error(response.error.message);
+          setModels(response.value);
+        } catch (cause) {
+          if (active()) setError(cause instanceof Error ? cause.message : String(cause));
+        } finally {
+          if (active()) setLoading(false);
+        }
+      }, [provider.provider, provider.settingsNs, remote]);
+      React.useEffect(() => {
+        let active = true;
+        void refresh(() => active);
+        return () => { active = false; };
+      }, [refresh]);
+      const filtered = models.filter(model => `${model.name ?? ''} ${model.id}`.toLowerCase().includes(query.trim().toLowerCase()));
+      const e = React.createElement;
+      return e('section', { className: 'cb-models', 'data-codebuddy-models': '' },
+        e('div', { className: 'cb-models-head' },
+          e('h3', null, `${t('models')} (${models.length})`),
+          e('button', { type: 'button', title: t('refresh'), 'aria-label': t('refresh'), disabled: loading,
+            onClick: () => { void refresh(); } }, e(IconRefreshOutlineRegular, { size: 16, 'aria-hidden': true }))),
+        e('label', { className: 'cb-models-search' },
+          e(IconSearchOutlineRegular, { size: 15, 'aria-hidden': true }),
+          e('input', { type: 'search', value: query, placeholder: t('search'), 'aria-label': t('search'),
+            onChange: event => setQuery(event.target.value) })),
+        error ? e('p', { className: 'cb-models-error', role: 'alert' }, error) : null,
+        loading && models.length === 0 ? e('p', { className: 'cb-models-empty', role: 'status' }, t('loading')) : null,
+        !loading && filtered.length === 0 ? e('p', { className: 'cb-models-empty' }, t('noModels')) : null,
+        filtered.length > 0 ? e('ul', null, ...filtered.map(model => e('li', { key: model.id },
+          e('span', { title: model.id }, model.name || model.id),
+          model.name && model.name !== model.id ? e('code', null, model.id) : null))) : null);
     }
 
     function eventId(data) {
@@ -212,7 +259,18 @@ window.__ModuleLoader__.load({
 .cb-thought-preview{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.55;flex:1}.cb-thought[open] .cb-tool-chevron{transform:rotate(180deg)}
 .cb-thought-body{margin:4px 0 10px 22px;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:500px;overflow:auto}`;
 
-    const inject = ['uiConversation', 'slots', 'locale'];
+    const MODELS_STYLE = `.cb-models{border-top:1px solid color-mix(in srgb,currentColor 14%,transparent);padding:12px 0 4px;min-width:0}
+.cb-models-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.cb-models-head h3{font-size:14px;font-weight:600;margin:0}
+.cb-models-head button{display:grid;place-items:center;width:30px;height:30px;background:transparent;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:4px;color:inherit;cursor:pointer}
+.cb-models-head button:disabled{opacity:.45;cursor:default}.cb-models-head button:focus-visible,.cb-models-search input:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+.cb-models-search{display:flex;align-items:center;gap:8px;margin:10px 0;padding:5px 8px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:4px;max-width:360px}
+.cb-models-search input{border:0;background:transparent;color:inherit;outline:0;min-width:0;width:100%;font:inherit;font-size:13px}
+.cb-models ul{list-style:none;margin:0;padding:0;max-height:240px;overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:0 16px}
+.cb-models li{display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0;padding:6px 0;border-bottom:1px solid color-mix(in srgb,currentColor 9%,transparent);font-size:13px}
+.cb-models li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}.cb-models li code{font-size:11px;opacity:.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cb-models-empty,.cb-models-error{font-size:13px;margin:8px 0}.cb-models-error{color:#bb4444}`;
+
+    const inject = ['uiConversation', 'slots', 'locale', 'remote', 'remote.llm'];
     function apply(ctx) {
       ctx.uiConversation.events.register({ ...chatDefinition, match: { [TOOL_EVENT]: match } });
       ctx.uiConversation.events.register(thoughtDefinition);
@@ -223,10 +281,13 @@ window.__ModuleLoader__.load({
       ctx.slots.inject('conversation.chat.node', () => ctx.slots.register({
         name: 'conversation.chat.node', key: 'codebuddy-thought', locale: NS,
       }, ThoughtRow));
+      ctx.slots.inject('settings.models.provider-card', () => ctx.slots.register({
+        name: 'settings.models.provider-card', key: 'llm-cli', locale: NS,
+      }, props => React.createElement(ModelCatalog, { ...props, remote: ctx.remote })));
       ctx.effect(() => {
         const style = document.createElement('style');
         style.dataset.pluginCss = 'dsh-codebuddy-llm/tool';
-        style.textContent = THOUGHT_STYLE;
+        style.textContent = THOUGHT_STYLE + MODELS_STYLE;
         document.head.append(style);
         return () => style.remove();
       }, 'codebuddy: tool styles');

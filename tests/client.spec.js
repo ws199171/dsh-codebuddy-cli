@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 
-function clientFixture() {
+function clientFixture(remote = { llm: { discoverModels: async () => ({ ok: true, value: [{ id: 'model-a' }] }) } }) {
   let descriptor;
   const registrations = [];
   const views = new Map();
@@ -18,11 +18,16 @@ function clientFixture() {
   });
   const React = {
     createElement: (type, props, ...children) => ({ type, props, children }),
+    useState: initial => [initial, () => {}],
+    useCallback: callback => callback,
+    useEffect: effect => effect(),
   };
   const client = descriptor.factory((name) => {
     if (name === 'react') return React;
     if (name === '@deepseek-ai/dsh-client-ui-primitives') return {
       IconChevronDownOutlineRegular: () => null,
+      IconRefreshOutlineRegular: () => null,
+      IconSearchOutlineRegular: () => null,
       IconThinkOutlineRegular: () => null,
     };
     throw new Error(`unexpected client import ${name}`);
@@ -34,6 +39,7 @@ function clientFixture() {
       register: (spec, view) => views.set(spec.key, view),
     },
     locale: { register: () => () => {} },
+    remote,
     effect: effect => effect(),
   });
   return { descriptor, client, registrations, views };
@@ -56,10 +62,11 @@ function textOf(element) {
 test('client bundle registers plugin-owned Chat and Execution folds', () => {
   const { descriptor, client, registrations, views } = clientFixture();
   assert.equal(descriptor.id, 'dsh-codebuddy-llm');
-  assert.deepEqual(Array.from(client.inject), ['uiConversation', 'slots', 'locale']);
+  assert.deepEqual(Array.from(client.inject), ['uiConversation', 'slots', 'locale', 'remote', 'remote.llm']);
   assert.equal(registrations.length, 3);
   assert.equal(views.has('codebuddy-tool-call'), false);
   assert.ok(views.has('codebuddy-thought'));
+  assert.ok(views.has('llm-cli'));
 
   const [chat, thought, execution] = registrations;
   const start = matching(chat, 10, 'running', { input: '{"command":"printf hello"}' });
@@ -105,6 +112,22 @@ test('client bundle registers plugin-owned Chat and Execution folds', () => {
     start, matches: [start, wrapped],
   });
   assert.equal(wrappedNode.data.root.content[0].text, '/workspace\n[exit code: 0]');
+});
+
+test('models settings extension refreshes the CLI catalog', async () => {
+  const calls = [];
+  const { views } = clientFixture({ llm: {
+    discoverModels: async (namespace, request) => {
+      calls.push([namespace, request.provider]);
+      return { ok: true, value: [{ id: 'claude-sonnet-5' }] };
+    },
+  } });
+  const wrapper = views.get('llm-cli')({
+    provider: { provider: 'codebuddy-cli', settingsNs: 'llm-cli' }, t: key => key,
+  });
+  wrapper.type(wrapper.props);
+  await Promise.resolve();
+  assert.deepEqual(calls, [['llm-cli', 'codebuddy-cli']]);
 });
 
 test('CodeBuddy tools project to native DSH tool rows', () => {

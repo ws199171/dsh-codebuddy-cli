@@ -16,6 +16,8 @@ This package is a standalone extraction of `@deepseek-ai/dsh-llm-cli` from the h
 
 The model stream uses native `text-delta` chunks. Stateless calls also use native `reasoning-delta` chunks. Persistent sessions record each completed thinking segment as `plugin:codebuddy/thought` at its actual position among CLI tool calls, avoiding a single reasoning block anchored before every tool. CLI-owned tools produce `plugin:codebuddy/tool-call` records with stable `callId`, `toolName`, `status`, and bounded input/output. The client projects CLI calls through Harness's native Tool tree, including Bash, Read, Write, Edit, Grep, Glob, and Web views; unknown tools use its generic row. Execution steps remain available. These records are display-only; the Harness did not execute the CLI's tools.
 
+The bundled client also shows the CLI's model catalog in the Models settings page and provides search and refresh controls. This fills the `llm-cli` provider-card extension on Harness versions whose built-in editor does not yet recognize CLI providers.
+
 ## Disclaimer
 
 This is an unofficial, third-party plugin. Its author is the only party behind it.
@@ -88,12 +90,14 @@ Every field is optional and volatile: a settings edit reaches the next request w
 | `env` | `{}` | Extra environment entries, layered over the subprocess seam's scrubbed base. |
 | `sessionIdArg` | `--session-id` | Argument carrying the persistent session id; an empty string makes every call stateless. |
 | `tools` | CLI default | Tool set the CLI restricts itself to; an empty string disables every built-in tool. |
-| `maxTurns` | CLI default | Cap on the CLI's own agentic turns inside one call. |
+| `maxTurns` | `999` | Cap on the CLI's own agentic turns inside one call. |
 | `effort` | CLI default | Reasoning level forwarded to the CLI. |
 | `turnTimeoutMs` | `86400000` | Ceiling for one delegated turn (24 h). A turn is the CLI's whole agent loop, so the bound only ends a run that never converges; `0` removes the timer entirely. |
 | `disposeGraceMs` | `3000` | Grace period for child process-tree termination. |
 | `modelDiscoveryArgs` | `['--help']` | Command whose output lists the CLI's model ids for a `print` route. |
 | `modelDiscoveryTimeoutMs` | `15000` | Deadline for that listing command. |
+
+Timeouts on CLI tools such as `TaskOutput` end only that tool wait, not the parent turn. Only `turnTimeoutMs` ends the entire CLI call; it applies to both `print` and `acp` transports.
 
 Model ids come from the CLI itself: an `acp` route asks the handshake (which also reports each model's input capacity), a `print` route parses the listing command. A configured catalog is merged behind the discovered entries.
 

@@ -76,7 +76,7 @@ export interface CliConnectionOptions {
     /** Grace in milliseconds for child process-tree termination. */
     disposeGraceMs: number;
     /**
-     * Ceiling in milliseconds for one delegated `acp` turn, or `0` for none. The
+     * Ceiling in milliseconds for one delegated CLI turn, or `0` for none. The
      * CLI runs a whole agent loop inside one call, so without a ceiling a run that
      * never converges holds the turn open for as long as the CLI keeps working.
      */

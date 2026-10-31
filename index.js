@@ -1285,6 +1285,18 @@ var CliAdapter = class extends LlmAdapter {
 		stdout.on("end", onEnd);
 		stdout.on("error", onError);
 		signal?.addEventListener("abort", onAbort, { once: true });
+		const turnTimer = facts.turnTimeoutMs <= 0 ? void 0 : setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			for (const [callId, call] of toolCalls) reportActivity({
+				callId, toolName: call.toolName, status: "failed",
+				output: "The delegated CLI turn timed out."
+			});
+			finish = failureChunk(`llm-cli: the delegated turn exceeded its ${String(facts.turnTimeoutMs)}ms deadline`, CLI_TURN_TIMEOUT_CODE, signal);
+			closeBlock();
+			queue.close();
+		}, facts.turnTimeoutMs);
+		turnTimer?.unref();
 		try {
 			for (;;) {
 				const chunk = await queue.next();
@@ -1299,6 +1311,7 @@ var CliAdapter = class extends LlmAdapter {
 			const outcome = await child.done;
 			yield failureChunk(`llm-cli: ${lastText.length > 0 ? `the CLI exited (${String(outcome.exitCode)}) without a result event after producing text` : `the CLI exited (${String(outcome.exitCode)}) without a result event`}`, CLI_START_FAILED_CODE);
 		} finally {
+			if (turnTimer !== void 0) clearTimeout(turnTimer);
 			stdout.off("data", onData);
 			stdout.off("end", onEnd);
 			stdout.off("error", onError);
@@ -1553,12 +1566,14 @@ const DEFAULT_MODEL_DISCOVERY_ARGS = ["--help"];
 /** Default ceiling for one model-discovery child. */
 const DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS = 15e3;
 /**
-* Default ceiling for one delegated `acp` turn. A turn is the CLI's whole agent
+ * Default ceiling for one delegated CLI turn. A turn is the CLI's whole agent
 * loop, not one model round, so the bound only exists to end a run that never
 * converges: a long investigation is the normal case, not an anomaly. Raise or
 * lower it per deployment, or set `0` to remove the timer entirely.
 */
 const DEFAULT_TURN_TIMEOUT_MS = 86400000;
+/** High default for the CLI's own agent loop; deployments may override it. */
+const DEFAULT_MAX_TURNS = 999;
 /**
 * Read the current value behind every reference of a parsed {@link Config}.
 * Every schema field is volatile, so each entry is a reference by construction.
@@ -1591,7 +1606,7 @@ const cliConfigFields = {
 	transport: z.union(CLI_TRANSPORTS).default(DEFAULT_TRANSPORT).volatile(),
 	permissionMode: z.union(CODEBUDDY_PERMISSION_MODES).default(DEFAULT_PERMISSION_MODE).volatile(),
 	tools: z.string().volatile(),
-	maxTurns: z.natural().min(1).volatile(),
+	maxTurns: z.natural().min(1).default(DEFAULT_MAX_TURNS).volatile(),
 	effort: z.union(CODEBUDDY_EFFORT_LEVELS).volatile(),
 	disposeGraceMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_DISPOSE_GRACE_MS).volatile()
 };
@@ -1681,7 +1696,7 @@ function resolveAdapterOptions(config, defaultCwd) {
 	const turnTimeoutMs = config.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
 	if (!Number.isFinite(turnTimeoutMs) || turnTimeoutMs < 0 || turnTimeoutMs > MAX_TIMER_DELAY_MS) throw new Error(`llm-cli: turnTimeoutMs must be 0 or a positive finite number no greater than ${String(MAX_TIMER_DELAY_MS)}`);
 	const sessionIdArg = config.sessionIdArg ?? "--session-id";
-	const maxTurns = config.maxTurns;
+	const maxTurns = config.maxTurns ?? DEFAULT_MAX_TURNS;
 	if (maxTurns !== void 0 && (!Number.isInteger(maxTurns) || maxTurns < 1)) throw new Error("llm-cli: maxTurns must be a positive whole number");
 	const effort = config.effort;
 	if (effort !== void 0 && !CODEBUDDY_EFFORT_LEVELS.includes(effort)) throw new Error(`llm-cli: unsupported effort "${effort}"`);

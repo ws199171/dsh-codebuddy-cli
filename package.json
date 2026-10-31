@@ -1,6 +1,6 @@
 {
   "name": "dsh-codebuddy-llm",
-  "version": "0.2.3",
+  "version": "0.2.6",
   "description": "Delegating CLI LLM adapter for the DeepSeek Harness: answers each model call by running the CodeBuddy CLI child that carries its own sign-in and agent loop, so a deployment runs without an API key",
   "author": "saisaiwang <287442583@qq.com>",
   "repository": {
@@ -75,6 +75,8 @@
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-chat",
         "@deepseek-ai/dsh-client-ui-tool",
+        "@deepseek-ai/dsh-client-ui-settings-models",
+        "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-ui-execution-viewer",
         "@deepseek-ai/dsh-client-locale"
       ]

@@ -7,6 +7,11 @@ const line = (record) => JSON.stringify(record)
 const streamEvent = (event) => line({ type: 'stream_event', event })
 const message = [{ role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: 'Inspect this' }] }]
 
+test('default CLI turn limit is 999 and remains configurable', () => {
+  assert.equal(resolveAdapterOptions({}, process.cwd()).maxTurns, 999)
+  assert.equal(resolveAdapterOptions({ maxTurns: 37 }, process.cwd()).maxTurns, 37)
+})
+
 function adapter(transport, events, activity, thoughts) {
   const facts = { ...resolveAdapterOptions({ command: 'codebuddy' }, process.cwd()), transport }
   return new CliAdapter({
@@ -60,6 +65,44 @@ test('print separates thinking and tool progress from the final answer', async (
     { sessionId: 'harness-1', callId: 'call-1', toolName: 'Read', status: 'ok', input: '{"file":"a.js"}', output: 'file contents' },
   ])
   assert.deepEqual(chunks.at(-1), { type: 'finish', reason: { kind: 'stop' } })
+})
+
+test('a failed delegated tool does not end the CLI turn', async () => {
+  const activity = []
+  const events = [
+    streamEvent({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'wait-1', name: 'TaskOutput' } }),
+    streamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"task_id":"job-1","timeout":600000}' } }),
+    streamEvent({ type: 'content_block_stop', index: 0 }),
+    line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'wait-1', is_error: true, content: 'wait timed out' }] } }),
+    streamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'I will continue.' } }),
+    line({ type: 'result', subtype: 'success', is_error: false }),
+  ]
+  const chunks = []
+  for await (const chunk of adapter('print', events, activity).stream({ model: 'default', sessionId: 'harness-1', messages: message })) chunks.push(chunk)
+  assert.equal(activity.at(-1).status, 'failed')
+  assert.equal(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join(''), 'I will continue.')
+  assert.deepEqual(chunks.at(-1), { type: 'finish', reason: { kind: 'stop' } })
+})
+
+test('print turn timeout ends the CLI child and reports a terminal failure', async () => {
+  const stdout = new PassThrough()
+  const activity = []
+  let terminated = 0
+  const facts = resolveAdapterOptions({ turnTimeoutMs: 20 }, process.cwd())
+  const instance = new CliAdapter({
+    options: () => facts,
+    onToolActivity: (_, record) => activity.push(record),
+    spawn: () => ({
+      stdout, done: Promise.resolve({ exitCode: 0 }),
+      terminate() { terminated += 1; stdout.end() },
+      async waitForExit() {},
+    }),
+  })
+  const chunks = []
+  for await (const chunk of instance.stream({ model: 'default', sessionId: 'harness-1', messages: message })) chunks.push(chunk)
+  assert.equal(terminated, 1)
+  assert.equal(chunks.at(-1).reason.kind, 'error')
+  assert.equal(chunks.at(-1).reason.failure.code, 'CLI_TURN_TIMEOUT')
 })
 
 test('ACP activity uses the harness session id and stays outside answer text', async () => {

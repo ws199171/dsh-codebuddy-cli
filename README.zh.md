@@ -16,6 +16,8 @@ description: "委托式 CLI LLM 适配器：每次模型调用都交给 CodeBudd
 
 模型流使用原生 `text-delta` 块；无会话调用仍使用原生 `reasoning-delta`。持久会话将每段思考按实际顺序写入 `plugin:codebuddy/thought`，避免整段思考被锚定在所有工具之前。CLI 工具步骤写入插件自有的 `plugin:codebuddy/tool-call` 记录，包含稳定的 `callId`、`toolName`、`status` 及有长度上限的输入/输出。客户端把 CLI 调用交给 Harness 原生工具树，Bash、Read、Write、Edit、Grep、Glob 和 Web 使用对应视图，其他工具使用原生通用工具行；Execution 步骤仍可查看。这些记录仅用于展示，工具仍由 CLI 执行。
 
+客户端还会在“模型”设置页显示 CLI 模型目录，提供搜索和刷新。对于内置编辑器尚不认识 CLI 提供方的 Harness 版本，该面板通过 `llm-cli` 提供方扩展槽加载。
+
 ## 免责声明
 
 这是一个非官方的第三方插件，除作者之外没有任何一方为它背书。
@@ -88,12 +90,14 @@ dsh plugin --profile work add dsh-codebuddy-llm
 | `env` | `{}` | 追加的环境变量，叠加在 subprocess 接缝清洗后的基础环境之上。 |
 | `sessionIdArg` | `--session-id` | 承载持久会话 id 的参数；设为空字符串则每次调用无状态。 |
 | `tools` | CLI 默认 | 限定 CLI 可用的工具集；空字符串禁用全部内置工具。 |
-| `maxTurns` | CLI 默认 | 单次调用内 CLI 自己的智能体轮数上限。 |
+| `maxTurns` | `999` | 单次调用内 CLI 自己的智能体轮数上限。 |
 | `effort` | CLI 默认 | 转发给 CLI 的推理强度。 |
 | `turnTimeoutMs` | `86400000` | 单次委托回合的时长上限（24 小时）。一个回合是 CLI 的整个智能体循环，因此这个上限只用来终止永不收敛的运行；`0` 表示完全不计时。 |
 | `disposeGraceMs` | `3000` | 结束子进程树的宽限期。 |
 | `modelDiscoveryArgs` | `['--help']` | `print` 路由用来解析模型 id 的列表命令。 |
 | `modelDiscoveryTimeoutMs` | `15000` | 上述列表命令的超时。 |
+
+`TaskOutput` 等 CLI 内部工具的超时只结束该工具等待，不结束主回合。只有 `turnTimeoutMs` 到期才终止整个 CLI 调用；它对 `print` 和 `acp` 路由都生效。
 
 模型 id 来自 CLI 本身：`acp` 路由问握手（同时带回每个模型的上下文容量），`print` 路由解析列表命令。配置的目录会排在发现到的条目之后。
 
